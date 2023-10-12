@@ -11,6 +11,7 @@ serde_json = "1"
 derive_more = "0.99"
 anyhow = "1"
 jsonrpsee = { version = "0.20", features = ["server", "macros"]}
+uuid = { version = "1", features = ["v4", "fast-rng"]}
 
 [features]
 client = ["jsonrpsee/client"]

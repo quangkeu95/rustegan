@@ -8,6 +8,20 @@ pub struct Message {
     pub body: MessageBody,
 }
 
+impl Message {
+    pub fn into_reply(self, msg_id: MessageId, payload: Payload) -> Self {
+        Self {
+            src: self.dest,
+            dest: self.src,
+            body: MessageBody {
+                msg_id: Some(msg_id),
+                in_reply_to: self.body.msg_id,
+                payload,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, From)]
 pub struct NodeId(String);
 
@@ -40,6 +54,10 @@ pub enum Payload {
         node_ids: Vec<NodeId>,
     },
     InitOk,
+    Generate,
+    GenerateOk {
+        id: String,
+    },
 }
 
 pub type MessageId = usize;
