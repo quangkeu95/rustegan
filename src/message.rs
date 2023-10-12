@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use derive_more::From;
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +24,7 @@ impl Message {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, From)]
+#[derive(Debug, Deserialize, Serialize, Clone, From, Eq, PartialEq, Hash)]
 pub struct NodeId(String);
 
 impl From<&str> for NodeId {
@@ -58,9 +60,23 @@ pub enum Payload {
     GenerateOk {
         id: String,
     },
+    Broadcast {
+        message: BroadcastMessage,
+    },
+    BroadcastOk,
+    Read,
+    ReadOk {
+        messages: Vec<BroadcastMessage>,
+    },
+    Topology {
+        topology: HashMap<NodeId, Vec<NodeId>>,
+    },
+    TopologyOk,
 }
 
 pub type MessageId = usize;
+
+pub type BroadcastMessage = isize;
 
 #[cfg(test)]
 mod tests {
