@@ -1,4 +1,4 @@
-use derive_more::Deref;
+use derive_more::From;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -8,8 +8,14 @@ pub struct Message {
     pub body: MessageBody,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, From)]
 pub struct NodeId(String);
+
+impl From<&str> for NodeId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct MessageBody {
@@ -19,11 +25,21 @@ pub struct MessageBody {
     pub payload: Payload,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Payload {
-    Echo { echo: String },
-    EchoOk { echo: String },
+    Echo {
+        echo: String,
+    },
+    EchoOk {
+        echo: String,
+    },
+    Init {
+        node_id: NodeId,
+        node_ids: Vec<NodeId>,
+    },
+    InitOk,
 }
 
 pub type MessageId = usize;
