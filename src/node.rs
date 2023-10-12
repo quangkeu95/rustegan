@@ -63,13 +63,15 @@ impl Node {
                     let neighbours = self.get_neighbours();
 
                     for neighbour in neighbours {
-                        self.send(
-                            &neighbour,
-                            Payload::Broadcast {
-                                message: broadcast_message,
-                            },
-                            stdout,
-                        )?;
+                        if neighbour != message.src {
+                            self.send(
+                                &neighbour,
+                                Payload::Broadcast {
+                                    message: broadcast_message,
+                                },
+                                stdout,
+                            )?;
+                        }
                     }
 
                     let reply = message.into_reply(self.msg_id, Payload::BroadcastOk);
