@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use derive_more::From;
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,7 @@ pub enum Payload {
     BroadcastOk,
     Read,
     ReadOk {
-        messages: Vec<BroadcastMessage>,
+        messages: HashSet<BroadcastMessage>,
     },
     Topology {
         topology: HashMap<NodeId, Vec<NodeId>>,
@@ -76,7 +76,7 @@ pub enum Payload {
 
 pub type MessageId = usize;
 
-pub type BroadcastMessage = isize;
+pub type BroadcastMessage = usize;
 
 #[cfg(test)]
 mod tests {
