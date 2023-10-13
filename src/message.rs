@@ -3,6 +3,12 @@ use std::collections::{HashMap, HashSet};
 use derive_more::From;
 use serde::{Deserialize, Serialize};
 
+pub enum Event {
+    Message(Message),
+    Command(Command),
+    EOF,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Message {
     pub src: NodeId,
@@ -72,6 +78,14 @@ pub enum Payload {
         topology: HashMap<NodeId, Vec<NodeId>>,
     },
     TopologyOk,
+
+    Gossip {
+        seen: HashSet<BroadcastMessage>,
+    },
+}
+
+pub enum Command {
+    Gossip,
 }
 
 pub type MessageId = usize;
