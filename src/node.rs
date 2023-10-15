@@ -136,12 +136,17 @@ impl Node {
 
                             // forward broadcast message to all neighbours
                             // skip the neighbour that send us the broadcast message
+                            // skip the neighbour that already seen that message
                             let neighbours = self
                                 .get_neighbours()
                                 .into_iter()
                                 .filter(|nei| *nei != message.src);
 
                             for neighbour in neighbours {
+                                // if the neighbour already known this broadcast message, we skip
+                                if self.known[&neighbour].contains(&broadcast_message) {
+                                    continue;
+                                }
                                 let forward_message = Message {
                                     src: self.node_id.clone(),
                                     dest: neighbour,
@@ -182,23 +187,6 @@ impl Node {
                             .extend(seen.iter().copied());
                         self.broadcast_msgs.extend(seen);
                     }
-                    // Payload::Gossip { seen } => {
-                    //     let neighbours = self.get_neighbours();
-
-                    //     for n in neighbours {
-
-                    //         let message = Message {
-                    //             src: self.node_id.clone(),
-                    //             dest:  n,
-                    //             body: MessageBody {
-                    //                 msg_id: None,
-                    //                 in_reply_to: None,
-                    //                 payload: Pay,
-                    //             }
-                    //         }
-                    //     }
-
-                    // },
                     Payload::EchoOk { .. }
                     | Payload::BroadcastOk
                     | Payload::ReadOk { .. }
