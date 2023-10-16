@@ -1,36 +1,49 @@
-use std::collections::{HashMap, HashSet};
+use std::io::{StdoutLock, Write};
 
-use derive_more::From;
+use derive_more::{Display, From};
 use serde::{Deserialize, Serialize};
 
-pub enum Event {
-    Message(Message),
+pub enum Event<Payload, Command> {
+    Message(Message<Payload>),
     Command(Command),
     EOF,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Message {
+pub struct Message<Payload> {
     pub src: NodeId,
     pub dest: NodeId,
-    pub body: MessageBody,
+    pub body: MessageBody<Payload>,
 }
 
-impl Message {
-    pub fn into_reply(self, msg_id: MessageId, payload: Payload) -> Self {
+impl<Payload> Message<Payload>
+where
+    Payload: Serialize,
+{
+    pub fn into_reply(self, msg_id: Option<&mut MessageId>) -> Self {
         Self {
             src: self.dest,
             dest: self.src,
             body: MessageBody {
-                msg_id: Some(msg_id),
+                msg_id: msg_id.map(|id| {
+                    let mid = *id;
+                    *id += 1;
+                    mid
+                }),
                 in_reply_to: self.body.msg_id,
-                payload,
+                payload: self.body.payload,
             },
         }
     }
+
+    pub fn send(self, stdout: &mut StdoutLock) -> anyhow::Result<()> {
+        serde_json::to_writer(&mut *stdout, &self)?;
+        stdout.write_all(b"\n")?;
+        Ok(())
+    }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, From, Eq, PartialEq, Hash)]
+#[derive(Debug, Display, Deserialize, Serialize, Clone, From, Eq, PartialEq, Hash)]
 pub struct NodeId(String);
 
 impl From<&str> for NodeId {
@@ -40,85 +53,11 @@ impl From<&str> for NodeId {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct MessageBody {
+pub struct MessageBody<Payload> {
     pub msg_id: Option<MessageId>,
     pub in_reply_to: Option<MessageId>,
     #[serde(flatten)]
     pub payload: Payload,
 }
 
-#[non_exhaustive]
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Payload {
-    Echo {
-        echo: String,
-    },
-    EchoOk {
-        echo: String,
-    },
-    Init {
-        node_id: NodeId,
-        node_ids: Vec<NodeId>,
-    },
-    InitOk,
-    Generate,
-    GenerateOk {
-        id: String,
-    },
-    Broadcast {
-        message: BroadcastMessage,
-    },
-    BroadcastOk,
-    Read,
-    ReadOk {
-        messages: HashSet<BroadcastMessage>,
-    },
-    Topology {
-        topology: HashMap<NodeId, Vec<NodeId>>,
-    },
-    TopologyOk,
-
-    Gossip {
-        seen: HashSet<BroadcastMessage>,
-    },
-}
-
-pub enum Command {
-    Gossip,
-}
-
 pub type MessageId = usize;
-
-pub type BroadcastMessage = usize;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn can_deserialize_message() {
-        let message_json = r#"
-            {
-              "src": "c1",
-              "dest": "n1",
-              "body": {
-                "type": "echo",
-                "msg_id": 1,
-                "echo": "Please echo 35"
-              }
-            }
-        "#;
-
-        let message: Message = serde_json::from_str(message_json).unwrap();
-        assert_eq!(message.src.0, "c1".to_string());
-        assert_eq!(message.dest.0, "n1".to_string());
-        assert_eq!(message.body.msg_id.unwrap(), 1);
-        match message.body.payload {
-            Payload::Echo { echo } => {
-                assert_eq!(echo.as_str(), "Please echo 35");
-            }
-            _ => panic!("unexpected payload"),
-        }
-    }
-}

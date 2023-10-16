@@ -10,7 +10,7 @@ cargo build
 ## Test with Maelstrom
 [x] Echo
 ```bash
-./maelstrom/maelstrom test -w echo --bin ./target/debug/rustegan --node-count 1 --time-limit 10
+./maelstrom/maelstrom test -w echo --bin ./target/debug/echo --node-count 1 --time-limit 10
 ```
 
 [x] Unique ID Generation

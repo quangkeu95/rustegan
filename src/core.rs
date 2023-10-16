@@ -1,12 +1,28 @@
 use std::io::BufRead;
 
-use anyhow::Context;
-use rustegan::{
-    message::{Event, Message, Payload},
-    node::Node,
+use crate::{
+    message::{Event, Message, MessageBody},
+    node::Init,
 };
 
-fn main() -> anyhow::Result<()> {
+use super::node::Node;
+use anyhow::Context;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum InitPayload {
+    Init(Init),
+    InitOk,
+}
+
+pub fn main_loop<S, N, P, C>(init_state: S) -> anyhow::Result<()>
+where
+    N: Node<S, P, C>,
+    P: DeserializeOwned + Send + 'static,
+    C: Send + 'static,
+{
     let (tx, rx) = std::sync::mpsc::channel();
 
     let stdin = std::io::stdin().lock();
@@ -14,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     let mut stdout = std::io::stdout().lock();
 
     // read init message
-    let init_msg: Message = serde_json::from_str(
+    let init_msg: Message<InitPayload> = serde_json::from_str(
         &stdin
             .next()
             .expect("no init message received")
@@ -22,24 +38,29 @@ fn main() -> anyhow::Result<()> {
     )
     .context("cannot deserialize init message")?;
 
-    let Payload::Init { node_id, node_ids } = init_msg.body.payload else {
+    let InitPayload::Init(init) = init_msg.body.payload else {
         panic!("first message should be init message");
     };
 
-    let mut node = Node::new(node_id, node_ids, tx.clone());
-    node.handle_init(
-        init_msg.src,
-        init_msg.dest,
-        init_msg.body.msg_id,
-        &mut stdout,
-    )?;
+    let mut node: N = Node::from_init(init_state, init, tx.clone())?;
+    let reply = Message {
+        src: init_msg.dest,
+        dest: init_msg.src,
+        body: MessageBody {
+            msg_id: Some(0),
+            in_reply_to: init_msg.body.msg_id,
+            payload: InitPayload::InitOk,
+        },
+    };
+
+    reply.send(&mut stdout).context("send response to init")?;
 
     drop(stdin);
     let handle = std::thread::spawn(move || {
         let stdin = std::io::stdin().lock();
         for line in stdin.lines() {
             let input = line.context("Maelstrom input from STDIN could not be read")?;
-            let msg: Message = serde_json::from_str(&input)
+            let msg: Message<P> = serde_json::from_str(&input)
                 .context("Maelstrom input from STDIN could not be deserialized")?;
 
             if let Err(_) = tx.send(Event::Message(msg)) {
