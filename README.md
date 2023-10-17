@@ -15,30 +15,35 @@ cargo build
 
 [x] Unique ID Generation
 ```bash
-./maelstrom/maelstrom test -w unique-ids --bin ./target/debug/rustegan --time-limit 30 --rate 1000 --node-count 3 --availability total --nemesis partition
+./maelstrom/maelstrom test -w unique-ids --bin ./target/debug/unique-ids --time-limit 30 --rate 1000 --node-count 3 --availability total --nemesis partition
 ```
 
 [x] Single-Node Broadcast
 ```bash
-./maelstrom/maelstrom test -w broadcast --bin ./target/debug/rustegan --node-count 1 --time-limit 20 --rate 10
+./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 1 --time-limit 20 --rate 10
 ```
 
 [x] Multi-Node Broadcast
 ```bash
-./maelstrom/maelstrom test -w broadcast --bin ./target/debug/rustegan --node-count 5 --time-limit 20 --rate 10
+./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 5 --time-limit 20 --rate 10
 ```
 
 [x] Fault Tolerant Broadcast
 ```bash
-./maelstrom/maelstrom test -w broadcast --bin ./target/debug/rustegan --node-count 5 --time-limit 20 --rate 10 --nemesis partition
+./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 5 --time-limit 20 --rate 10 --nemesis partition
 ```
 
 [x] Broadcast Efficiency Part 1
 ```bash
-./maelstrom/maelstrom test -w broadcast --bin ./target/debug/rustegan --node-count 25 --time-limit 20 --rate 100 --nemesis partition
+./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --nemesis partition
 ```
 
 [x] Broadcast Efficiency Part 2
 ```bash
-./maelstrom/maelstrom test -w broadcast --bin ./target/debug/rustegan --node-count 25 --time-limit 20 --rate 100 --latency 100 --topology tree4
+./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100 --topology tree4
+```
+
+[x] Grow-only Counter
+```bash
+./maelstrom/maelstrom test -w g-counter --bin ./target/debug/counter --node-count 3 --rate 100 --time-limit 20 --nemesis partition
 ```

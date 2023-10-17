@@ -13,6 +13,7 @@ anyhow = "1"
 jsonrpsee = { version = "0.20", features = ["server", "macros"]}
 uuid = { version = "1", features = ["v4", "fast-rng"]}
 rand = "0.8.5"
+chrono = { version = "0.4", features = ["serde"]}
 
 [features]
 client = ["jsonrpsee/client"]
