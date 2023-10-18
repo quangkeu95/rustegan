@@ -11,16 +11,16 @@ use std::time::Duration;
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum Payload {
-    Add { delta: usize },
+    Add { delta: isize },
     AddOk,
     Read,
-    ReadOk { value: usize },
+    ReadOk { value: isize },
     Gossip { seen: Vec<Record> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Record {
-    delta: usize,
+    delta: isize,
     timestamp: DateTime<Utc>,
 }
 
@@ -33,7 +33,7 @@ struct CounterNode {
     node: NodeId,
     node_ids: Vec<NodeId>,
     id: usize,
-    counter: usize,
+    counter: isize,
     seen: Vec<Record>,
     known: HashMap<NodeId, Vec<Record>>,
 }
@@ -132,7 +132,7 @@ impl CounterNode {
             .collect::<Vec<Record>>();
         all_values.extend_from_slice(&self.seen);
 
-        self.counter = all_values.iter().map(|i| i.delta).sum::<usize>();
+        self.counter = all_values.iter().map(|i| i.delta).sum::<isize>();
     }
 }
 
