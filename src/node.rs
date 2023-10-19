@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{io::StdoutLock, sync::mpsc::Sender};
+use std::{
+    io::{Lines, StdinLock, StdoutLock},
+    sync::mpsc::Sender,
+};
 
 use crate::message::{Event, NodeId};
 

@@ -43,6 +43,7 @@ where
     };
 
     let mut node: N = Node::from_init(init_state, init, tx.clone())?;
+
     let reply = Message {
         src: init_msg.dest,
         dest: init_msg.src,
