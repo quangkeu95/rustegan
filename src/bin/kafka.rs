@@ -60,6 +60,12 @@ enum Payload {
         commit_len: usize,
         suffix: Vec<Log>,
     },
+    LogResponse {
+        node: NodeId,
+        term: usize,
+        ack: usize,
+        success: bool,
+    },
 }
 
 // [offset, msg]
@@ -380,6 +386,41 @@ impl Node<(), Payload, Command> for KafkaNode {
                         prefix_term,
                         commit_len,
                         suffix,
+                    } => {
+                        self.maybe_step_down(term);
+
+                        self.leader = Some(leader);
+
+                        let log_ok = self.log_cache.len() >= prefix_len
+                            && (prefix_len == 0
+                                || self.log_cache[prefix_len - 1].term == prefix_term);
+
+                        if term == self.term && log_ok {
+                            self.append_entries(prefix_len, commit_len, &suffix);
+                            let ack = prefix_len + suffix.len();
+
+                            reply.body.payload = Payload::LogResponse {
+                                node: self.node.clone(),
+                                term: self.term,
+                                ack,
+                                success: true,
+                            };
+                            reply.send(&mut *stdout)?;
+                        } else {
+                            reply.body.payload = Payload::LogResponse {
+                                node: self.node.clone(),
+                                term: self.term,
+                                ack: 0,
+                                success: false,
+                            };
+                            reply.send(&mut *stdout)?;
+                        }
+                    }
+                    Payload::LogResponse {
+                        node,
+                        term,
+                        ack,
+                        success,
                     } => {}
 
                     Payload::SendOk { .. }
@@ -531,7 +572,10 @@ impl KafkaNode {
         Ok(())
     }
 
+    fn append_entries(&mut self, prefix_len: usize, leader_commit: usize, suffix: &[Log]) {}
+
     fn forward_msg_to_leader(&self, msg: Message<Payload>) -> anyhow::Result<()> {
+        // TODO
         Ok(())
     }
 
