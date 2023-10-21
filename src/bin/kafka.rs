@@ -316,6 +316,7 @@ impl Node<(), Payload, Command> for KafkaNode {
                         last_log_term: c_log_term,
                         last_log_length: c_log_length,
                     } => {
+                        // if candidate term if greater than us, we step down
                         self.maybe_step_down(c_term);
                         let last_term = self.last_log_term();
                         let log_ok = c_term > last_term
@@ -327,7 +328,7 @@ impl Node<(), Payload, Command> for KafkaNode {
 
                             reply.body.payload = Payload::VoteResponse {
                                 candidate,
-                                term: c_term,
+                                term: self.term,
                                 approve: true,
                             };
                             reply.send(&mut *stdout)?;
@@ -335,9 +336,10 @@ impl Node<(), Payload, Command> for KafkaNode {
                             // if candidate's log is outdated from our log, the candidate cannot be a leader
                             eprintln!("Candidate {:#?} log is outdated", candidate);
 
+                            // return our term to VoteRequest sender, so that the candidate can cancel the election if their term is less than our term
                             reply.body.payload = Payload::VoteResponse {
                                 candidate,
-                                term: c_term,
+                                term: self.term,
                                 approve: false,
                             };
                             reply.send(&mut *stdout)?;
