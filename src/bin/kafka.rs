@@ -353,8 +353,9 @@ impl Node<(), Payload, Command> for KafkaNode {
                                     self.replicate_log(&n, stdout)?;
                                 }
                             }
-                        } else if term > self.term {
+                        } else {
                             self.maybe_step_down(term);
+                            self.reset_election_deadline();
                         }
                     }
                     Payload::LogRequest {
@@ -366,6 +367,7 @@ impl Node<(), Payload, Command> for KafkaNode {
                         suffix,
                     } => {
                         self.maybe_step_down(term);
+                        self.reset_election_deadline();
 
                         if self.term == term {
                             self.leader = Some(leader);
@@ -402,7 +404,28 @@ impl Node<(), Payload, Command> for KafkaNode {
                         term,
                         ack,
                         success,
-                    } => {}
+                    } => {
+                        if self.term == term && matches!(self.node_role, NodeRole::Leader) {
+                            let sent_length =
+                                self.sent_length.get(&node).map(|n| *n).unwrap_or_default();
+
+                            if success
+                                && ack
+                                    > self.acked_length.get(&node).map(|n| *n).unwrap_or_default()
+                            {
+                                self.sent_length.insert(node.clone(), ack);
+                                self.acked_length.insert(node.clone(), ack);
+
+                                self.leader_commit(ack);
+                            } else if sent_length > 0 {
+                                self.sent_length.insert(node.clone(), sent_length - 1);
+                                self.replicate_log(&node, stdout)?;
+                            }
+                        } else {
+                            self.maybe_step_down(term);
+                            self.reset_election_deadline();
+                        }
+                    }
 
                     Payload::SendOk { .. }
                     | Payload::PollOk { .. }
@@ -443,12 +466,8 @@ impl KafkaNode {
 
     fn become_follower(&mut self) {
         self.node_role = NodeRole::Follower;
-        if let Some(voted) = self.voted_for.get(&self.term) {
-            if *voted == self.node {
-                // when become a follower and the vote is set for us with the term, we want to delete the vote
-                self.voted_for.remove(&self.term);
-            }
-        }
+        self.voted_for.remove(&self.term);
+
         eprintln!("{:#?} become follower", self.node);
     }
 
@@ -608,6 +627,8 @@ impl KafkaNode {
     fn commit(&mut self, log: Log) {
         self.commit_cache.push(log);
     }
+
+    fn leader_commit(&mut self, ack: usize) {}
 
     fn get_logs(&self, key: &str, offset: usize, max_items: usize) -> Vec<Log> {
         let logs = self
