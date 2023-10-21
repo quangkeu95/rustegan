@@ -4,6 +4,7 @@ use lazy_static::lazy_static;
 use rand::Rng;
 use rustegan::{message::*, node::*, *};
 use serde::{Deserialize, Serialize};
+use std::cmp::min;
 use std::collections::{HashMap, HashSet};
 use std::io::{Lines, StdinLock, StdoutLock};
 use std::sync::mpsc::Sender;
@@ -103,6 +104,8 @@ struct KafkaNode {
     votes_received: HashSet<NodeId>,
     /// Log caching
     log_cache: Vec<Log>,
+    /// Commits
+    commit_cache: Vec<Log>,
     /// The number of logs that has been sent to the followers
     sent_length: HashMap<NodeId, usize>,
     /// The number of acked that we have received from the followers
@@ -183,6 +186,7 @@ impl Node<(), Payload, Command> for KafkaNode {
             voted_for: HashMap::new(),
             votes_received: HashSet::new(),
             log_cache: Vec::new(),
+            commit_cache: Vec::new(),
             sent_length: HashMap::new(),
             acked_length: HashMap::new(),
             start_timestamp: Utc::now(),
@@ -240,6 +244,7 @@ impl Node<(), Payload, Command> for KafkaNode {
                             });
 
                             // require all nodes to acknowledge to the new log
+                            // the line below indicate that we already acknowledged to ourselve
                             self.acked_length
                                 .insert(self.node.clone(), self.log_cache.len());
 
@@ -250,26 +255,6 @@ impl Node<(), Payload, Command> for KafkaNode {
                             // forward the request to the current leader
                             let _ = self.forward_msg_to_leader(message)?;
                         }
-
-                        // if let Some(logs) = self.log_storage.get_mut(&key) {
-                        //     logs.push(Log {
-                        //         offset,
-                        //         msg,
-                        //         term: self.term,
-                        //     });
-                        // } else {
-                        //     self.log_storage.insert(
-                        //         key,
-                        //         vec![Log {
-                        //             offset,
-                        //             msg,
-                        //             term: self.term,
-                        //         }],
-                        //     );
-                        // }
-
-                        // reply.body.payload = Payload::SendOk { offset };
-                        // reply.send(&mut *stdout)?;
                     }
                     Payload::Poll { offsets } => {
                         let poll_res = offsets
@@ -382,8 +367,11 @@ impl Node<(), Payload, Command> for KafkaNode {
                     } => {
                         self.maybe_step_down(term);
 
-                        self.leader = Some(leader);
+                        if self.term == term {
+                            self.leader = Some(leader);
+                        }
 
+                        // we want to make sure that our logs is up-to-date with leader logs (not missing any entries)
                         let log_ok = self.log_cache.len() >= prefix_len
                             && (prefix_len == 0
                                 || self.log_cache[prefix_len - 1].term == prefix_term);
@@ -548,7 +536,7 @@ impl KafkaNode {
                     term: self.term,
                     prefix_len,
                     prefix_term,
-                    commit_len: 0,
+                    commit_len: self.commits_len(),
                     suffix: suffix.into(),
                 },
             },
@@ -559,7 +547,38 @@ impl KafkaNode {
         Ok(())
     }
 
-    fn append_entries(&mut self, prefix_len: usize, leader_commit: usize, suffix: &[Log]) {}
+    fn append_entries(&mut self, prefix_len: usize, leader_commit: usize, suffix: &[Log]) {
+        if suffix.len() > 0 && self.log_cache.len() > prefix_len {
+            let index = min(self.log_cache.len(), prefix_len + suffix.len()) - 1;
+            if self.log_cache[index].term != suffix[index - prefix_len].term {
+                self.log_cache = self
+                    .log_cache
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, item)| {
+                        if index < prefix_len {
+                            Some(item.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+            }
+
+            if prefix_len + suffix.len() > self.log_cache.len() {
+                for i in self.log_cache.len() - prefix_len..suffix.len() {
+                    self.log_cache.push(suffix[i].clone());
+                }
+            }
+
+            if leader_commit > self.commits_len() {
+                // some logs are ready to be committed
+                for i in self.commits_len()..leader_commit {
+                    self.commit(self.log_cache[i].clone());
+                }
+            }
+        }
+    }
 
     fn forward_msg_to_leader(&self, msg: Message<Payload>) -> anyhow::Result<()> {
         // TODO
@@ -580,6 +599,14 @@ impl KafkaNode {
 
     fn next_offset(&self, key: &str) -> usize {
         self.last_offset(key) + 1
+    }
+
+    fn commits_len(&self) -> usize {
+        self.commit_cache.len()
+    }
+
+    fn commit(&mut self, log: Log) {
+        self.commit_cache.push(log);
     }
 
     fn get_logs(&self, key: &str, offset: usize, max_items: usize) -> Vec<Log> {
