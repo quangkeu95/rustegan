@@ -9,9 +9,9 @@ use std::io::{Lines, StdinLock, StdoutLock};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-lazy_static! {
-    static ref ELECTION_TIMEOUT_DURATION: chrono::Duration = chrono::Duration::seconds(2);
-}
+// lazy_static! {
+//     static ref ELECTION_TIMEOUT_DURATION: chrono::Duration = chrono::Duration::seconds(2);
+// }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -146,7 +146,7 @@ impl Node<(), Payload, Command> for KafkaNode {
         init: Init,
         sender: Sender<Event<Payload, Command>>,
     ) -> anyhow::Result<Self> {
-        let now = Utc::now() + rand::thread_rng().gen_range(100..=900) * Duration::from_millis(1);
+        let election_deadline = Self::get_rand_election_deadline();
 
         // a thread to continuous checking leader status and start an election
         {
@@ -178,14 +178,14 @@ impl Node<(), Payload, Command> for KafkaNode {
             node_ids: init.node_ids,
             node_role: NodeRole::Follower,
             leader: None,
-            election_deadline: Utc::now(),
+            election_deadline,
             term: 0,
             voted_for: HashMap::new(),
             votes_received: HashSet::new(),
             log_cache: Vec::new(),
             sent_length: HashMap::new(),
             acked_length: HashMap::new(),
-            start_timestamp: now,
+            start_timestamp: Utc::now(),
             id: 0,
             offset: HashMap::new(),
             log_storage: HashMap::new(),
@@ -317,39 +317,30 @@ impl Node<(), Payload, Command> for KafkaNode {
                         last_log_length: c_log_length,
                     } => {
                         self.maybe_step_down(c_term);
-                        if c_term < self.term {
-                            eprintln!("Candidate {:#?} term {:#?} lower than our term {:#?}. Not granting vote.", candidate, c_term, self.term);
-                        } else if let Some(voted) = self.voted_for.get(&c_term) {
-                            eprintln!("Already voted for {:#?} with term {:#?}", voted, c_term);
+                        let last_term = self.last_log_term();
+                        let log_ok = c_term > last_term
+                            || (c_term == last_term && c_log_length >= self.log_cache.len());
+
+                        if c_term == self.term && log_ok && self.voted_for.get(&c_term).is_none() {
+                            eprintln!("Voted for {:#?} with term {:#?}", candidate, c_term);
+                            self.voted_for.insert(c_term, candidate.clone());
+
+                            reply.body.payload = Payload::VoteResponse {
+                                candidate,
+                                term: c_term,
+                                approve: true,
+                            };
+                            reply.send(&mut *stdout)?;
                         } else {
-                            let last_term = self.last_log_term();
-                            let log_ok = c_term > last_term
-                                || (c_term == last_term && c_log_length >= self.log_cache.len());
+                            // if candidate's log is outdated from our log, the candidate cannot be a leader
+                            eprintln!("Candidate {:#?} log is outdated", candidate);
 
-                            if c_term == self.term
-                                && log_ok
-                                && self.voted_for.get(&c_term).is_none()
-                            {
-                                eprintln!("Voted for {:#?} with term {:#?}", candidate, c_term);
-                                self.voted_for.insert(c_term, candidate.clone());
-
-                                reply.body.payload = Payload::VoteResponse {
-                                    candidate,
-                                    term: c_term,
-                                    approve: true,
-                                };
-                                reply.send(&mut *stdout)?;
-                            } else {
-                                // if candidate's log is outdated from our log, the candidate cannot be a leader
-                                eprintln!("Candidate {:#?} log is outdated", candidate);
-
-                                reply.body.payload = Payload::VoteResponse {
-                                    candidate,
-                                    term: c_term,
-                                    approve: false,
-                                };
-                                reply.send(&mut *stdout)?;
-                            }
+                            reply.body.payload = Payload::VoteResponse {
+                                candidate,
+                                term: c_term,
+                                approve: false,
+                            };
+                            reply.send(&mut *stdout)?;
                         }
                     }
                     Payload::VoteResponse {
@@ -498,12 +489,7 @@ impl KafkaNode {
     }
 
     fn last_log_term(&self) -> usize {
-        let last_log_term = if let Some(last) = self.log_cache.last() {
-            last.term
-        } else {
-            0
-        };
-        last_log_term
+        self.log_cache.last().map(|n| n.term).unwrap_or_default()
     }
 
     // Request other nodes vote for us as a leader
@@ -512,12 +498,11 @@ impl KafkaNode {
         timeout: chrono::Duration,
         stdout: &mut StdoutLock,
     ) -> anyhow::Result<()> {
-        let nodes = self.node_ids.iter().filter(|&n| *n != self.node);
         let term = self.term;
         let last_log_term = self.last_log_term();
         let last_log_length = self.log_cache.len();
 
-        for n in nodes {
+        for n in self.other_nodes() {
             let msg = Message {
                 src: self.node.clone(),
                 dest: n.clone(),
@@ -580,9 +565,11 @@ impl KafkaNode {
     }
 
     fn reset_election_deadline(&mut self) {
-        self.election_deadline = Utc::now()
-            + *ELECTION_TIMEOUT_DURATION
-            + rand::thread_rng().gen_range(100..=900) * Duration::from_millis(1);
+        self.election_deadline = Self::get_rand_election_deadline();
+    }
+
+    fn get_rand_election_deadline() -> DateTime<Utc> {
+        Utc::now() + rand::thread_rng().gen_range(300..=900) * Duration::from_millis(1)
     }
 
     fn last_offset(&self, key: &str) -> usize {
