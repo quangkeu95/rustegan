@@ -156,7 +156,7 @@ impl Node<(), Payload, Command> for KafkaNode {
             let sender = sender.clone();
 
             std::thread::spawn(move || loop {
-                std::thread::sleep(Duration::from_millis(300));
+                std::thread::sleep(Duration::from_millis(600));
 
                 if let Err(_) = sender.send(Event::Command(Command::Election)) {
                     break;
@@ -590,7 +590,7 @@ impl KafkaNode {
     }
 
     fn get_rand_election_deadline() -> DateTime<Utc> {
-        Utc::now() + rand::thread_rng().gen_range(300..=900) * Duration::from_millis(1)
+        Utc::now() + rand::thread_rng().gen_range(600..=900) * Duration::from_millis(1)
     }
 
     fn last_offset(&self, key: &str) -> usize {
