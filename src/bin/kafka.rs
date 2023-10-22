@@ -305,7 +305,7 @@ impl Node<(), Payload, Command> for KafkaNode {
                         self.maybe_step_down(c_term);
                         let last_term = self.last_log_term();
                         let log_ok = c_term > last_term
-                            || (c_term == last_term && c_log_length >= self.log_cache.len());
+                            || (c_log_term == last_term && c_log_length >= self.log_cache.len());
 
                         if c_term == self.term && log_ok && self.voted_for.get(&c_term).is_none() {
                             eprintln!("Voted for {:#?} with term {:#?}", candidate, c_term);
