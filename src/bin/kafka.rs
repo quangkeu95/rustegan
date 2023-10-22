@@ -253,7 +253,7 @@ impl Node<(), Payload, Command> for KafkaNode {
                             }
                         } else {
                             // forward the request to the current leader
-                            let _ = self.forward_msg_to_leader(message)?;
+                            let _ = self.forward_msg_to_leader(message, stdout)?;
                         }
                     }
                     Payload::Poll { offsets } => {
@@ -590,6 +590,7 @@ impl KafkaNode {
                 }
             }
 
+            // the followers commmit only when the leader sends the leader_commit which is greater than follower's commit length
             if leader_commit > self.commits_len() {
                 // some logs are ready to be committed
                 for i in self.commits_len()..leader_commit {
@@ -599,8 +600,16 @@ impl KafkaNode {
         }
     }
 
-    fn forward_msg_to_leader(&self, msg: Message<Payload>) -> anyhow::Result<()> {
-        // TODO
+    fn forward_msg_to_leader(
+        &self,
+        mut msg: Message<Payload>,
+        stdout: &mut StdoutLock,
+    ) -> anyhow::Result<()> {
+        if let Some(leader) = &self.leader {
+            msg.dest = leader.clone();
+
+            msg.send(stdout)?;
+        }
         Ok(())
     }
 
@@ -628,7 +637,37 @@ impl KafkaNode {
         self.commit_cache.push(log);
     }
 
-    fn leader_commit(&mut self, ack: usize) {}
+    fn leader_commit(&mut self, ack: usize) {
+        let min_acks = (self.node_ids.len() + 1) / 2;
+        // acked return the number of nodes that have acknowledged log length greater than a specific length
+        let acked = |length: usize| -> usize {
+            self.acked_length
+                .iter()
+                .filter(|(_node, &acked)| acked >= length)
+                .count()
+        };
+
+        // ready is a vector of log length that has at least a number of nodes acknowledged
+        let ready = (1..=self.log_cache.len())
+            .filter(|&length| acked(length) >= min_acks)
+            .collect::<HashSet<usize>>();
+
+        let max_commit = ready.iter().max().map(|n| *n).unwrap_or_default();
+
+        if ready.len() > 0
+            && max_commit > self.commits_len()
+            && self
+                .log_cache
+                .get(max_commit)
+                .map(|n| n.term)
+                .unwrap_or_default()
+                == self.term
+        {
+            for i in self.commits_len()..max_commit {
+                self.commit(self.log_cache[i].clone());
+            }
+        }
+    }
 
     fn get_logs(&self, key: &str, offset: usize, max_items: usize) -> Vec<Log> {
         let logs = self
