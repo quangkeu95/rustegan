@@ -1,11 +1,12 @@
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
+use log::*;
 use rand::Rng;
 use rustegan::{message::*, node::*, *};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Lines, StdinLock, StdoutLock};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
@@ -102,6 +103,8 @@ struct KafkaNode {
     voted_for: HashMap<usize, NodeId>,
     /// Keep track of votes for current term
     votes_received: HashSet<NodeId>,
+    /// Cache client send request
+    req_cache: VecDeque<Message<Payload>>,
     /// Log caching
     log_cache: Vec<Log>,
     /// Commits
@@ -110,17 +113,11 @@ struct KafkaNode {
     sent_length: HashMap<NodeId, usize>,
     /// The number of acked that we have received from the followers
     acked_length: HashMap<NodeId, usize>,
-    start_timestamp: DateTime<Utc>,
     id: usize,
     /// Offset is shared between node
     offset: HashMap<String, usize>,
-    log_storage: HashMap<String, Vec<Log>>,
-    commits: HashMap<String, usize>,
-}
-
-struct LeaderInfo {
-    node: NodeId,
-    start_timestamp: DateTime<Utc>,
+    committed_offset: HashMap<String, usize>,
+    key_to_offset_cache: HashMap<String, VecDeque<usize>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,12 +126,6 @@ struct Log {
     key: String,
     msg: usize,
     term: usize,
-}
-
-struct CachedTx {
-    key: String,
-    msg: usize,
-    // timestamp: DateTime<Utc>,
 }
 
 impl Log {
@@ -150,13 +141,20 @@ impl Node<(), Payload, Command> for KafkaNode {
         sender: Sender<Event<Payload, Command>>,
     ) -> anyhow::Result<Self> {
         let election_deadline = Self::get_rand_election_deadline();
+        let (node_role, leader) = if init.node_id == "n0".into() {
+            (NodeRole::Leader, Some("n0".into()))
+        } else {
+            (NodeRole::Follower, Some("n0".into()))
+        };
 
         // a thread to continuous checking leader status and start an election
         {
             let sender = sender.clone();
 
             std::thread::spawn(move || loop {
-                std::thread::sleep(Duration::from_millis(600));
+                let rand_duration =
+                    Duration::from_millis(1) * rand::thread_rng().gen_range(150..=300);
+                std::thread::sleep(rand_duration);
 
                 if let Err(_) = sender.send(Event::Command(Command::Election)) {
                     break;
@@ -179,21 +177,21 @@ impl Node<(), Payload, Command> for KafkaNode {
         Ok(KafkaNode {
             node: init.node_id,
             node_ids: init.node_ids,
-            node_role: NodeRole::Follower,
-            leader: None,
+            node_role,
+            leader,
             election_deadline,
             term: 0,
             voted_for: HashMap::new(),
             votes_received: HashSet::new(),
+            req_cache: VecDeque::new(),
             log_cache: Vec::new(),
             commit_cache: Vec::new(),
             sent_length: HashMap::new(),
             acked_length: HashMap::new(),
-            start_timestamp: Utc::now(),
             id: 0,
             offset: HashMap::new(),
-            log_storage: HashMap::new(),
-            commits: HashMap::new(),
+            committed_offset: HashMap::new(),
+            key_to_offset_cache: HashMap::new(),
         })
     }
 
@@ -233,16 +231,19 @@ impl Node<(), Payload, Command> for KafkaNode {
                 let mut reply = message.clone().into_reply(Some(&mut self.id));
                 match reply.body.payload {
                     Payload::Send { key, msg } => {
-                        // only leader can append the logs
+                        error!("Receive Send request with key {} msg {}", key, msg);
+                        // cache request
+                        self.req_cache.push_back(message.clone());
+
                         if matches!(self.node_role, NodeRole::Leader) {
                             let offset = self.next_offset(&key);
-                            self.log_cache.push(Log {
+                            let log = Log {
                                 offset,
                                 key,
                                 msg,
                                 term: self.term,
-                            });
-
+                            };
+                            self.add_log(log);
                             // require all nodes to acknowledge to the new log
                             // the line below indicate that we already acknowledged to ourselve
                             self.acked_length
@@ -257,41 +258,54 @@ impl Node<(), Payload, Command> for KafkaNode {
                         }
                     }
                     Payload::Poll { offsets } => {
-                        let poll_res = offsets
+                        let msgs = offsets
                             .into_iter()
                             .map(|(key, offset)| {
-                                let logs = self.get_logs(&key, offset, 3);
-                                let logs = logs
-                                    .into_iter()
-                                    .map(|item| item.into_record())
-                                    .collect::<Vec<Record>>();
-                                (key, logs)
+                                let last_committed_offset = self.get_last_committed_offset(&key);
+
+                                if last_committed_offset < offset {
+                                    (key, Vec::new())
+                                } else {
+                                    let logs = self
+                                        .commit_cache
+                                        .iter()
+                                        .filter_map(|log| {
+                                            if log.key == key
+                                                && log.offset >= last_committed_offset
+                                                && log.offset <= last_committed_offset
+                                            {
+                                                Some(log.clone().into_record())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect::<Vec<Record>>();
+                                    (key, logs)
+                                }
                             })
                             .collect::<HashMap<String, Vec<Record>>>();
 
-                        reply.body.payload = Payload::PollOk { msgs: poll_res };
+                        reply.body.payload = Payload::PollOk { msgs };
                         reply.send(&mut *stdout)?;
                     }
                     Payload::CommitOffsets { offsets } => {
-                        for (key, offset) in offsets.into_iter() {
-                            self.commits.insert(key, offset);
-                        }
+                        // for (key, offset) in offsets.into_iter() {
+                        //     self.commits.insert(key, offset);
+                        // }
 
                         reply.body.payload = Payload::CommitOffsetsOk;
                         reply.send(&mut *stdout)?;
                     }
                     Payload::ListCommittedOffsets { keys } => {
-                        let list_commits: HashMap<String, usize> = self
-                            .commits
-                            .iter()
-                            .filter_map(|(key, &offset)| {
-                                keys.contains(key).then(|| (key.clone(), offset))
+                        let offsets = keys
+                            .into_iter()
+                            .map(|key| {
+                                let offset = self.get_last_committed_offset(&key);
+                                (key, offset)
                             })
-                            .collect();
+                            .collect::<HashMap<String, usize>>();
 
-                        reply.body.payload = Payload::ListCommittedOffsetsOk {
-                            offsets: list_commits,
-                        };
+                        reply.body.payload = Payload::ListCommittedOffsetsOk { offsets };
                         reply.send(&mut *stdout)?;
                     }
                     Payload::VoteRequest {
@@ -301,6 +315,10 @@ impl Node<(), Payload, Command> for KafkaNode {
                         last_log_term: c_log_term,
                         last_log_length: c_log_length,
                     } => {
+                        error!(
+                            "Receive VoteRequest from {:#?} with term {:#?}",
+                            candidate, c_term
+                        );
                         // if candidate term if greater than us, we step down
                         self.maybe_step_down(c_term);
                         let last_term = self.last_log_term();
@@ -308,7 +326,7 @@ impl Node<(), Payload, Command> for KafkaNode {
                             || (c_log_term == last_term && c_log_length >= self.log_cache.len());
 
                         if c_term == self.term && log_ok && self.voted_for.get(&c_term).is_none() {
-                            eprintln!("Voted for {:#?} with term {:#?}", candidate, c_term);
+                            error!("Voted for {:#?} with term {:#?}", candidate, c_term);
                             self.voted_for.insert(c_term, candidate.clone());
 
                             reply.body.payload = Payload::VoteResponse {
@@ -319,7 +337,7 @@ impl Node<(), Payload, Command> for KafkaNode {
                             reply.send(&mut *stdout)?;
                         } else {
                             // if candidate's log is outdated from our log, the candidate cannot be a leader
-                            eprintln!("Candidate {:#?} log is outdated", candidate);
+                            error!("Not vote for {:#?}", candidate);
 
                             // return our term to VoteRequest sender, so that the candidate can cancel the election if their term is less than our term
                             reply.body.payload = Payload::VoteResponse {
@@ -366,6 +384,10 @@ impl Node<(), Payload, Command> for KafkaNode {
                         commit_len,
                         suffix,
                     } => {
+                        error!(
+                            "Receive LogRequest from {} with term {} prefix_len {} prefix_term {} commit_len {} suffix {:#?}",
+                            leader, term, prefix_len, prefix_term, commit_len, suffix
+                        );
                         self.maybe_step_down(term);
                         self.reset_election_deadline();
 
@@ -379,7 +401,7 @@ impl Node<(), Payload, Command> for KafkaNode {
                                 || self.log_cache[prefix_len - 1].term == prefix_term);
 
                         if term == self.term && log_ok {
-                            self.append_entries(prefix_len, commit_len, &suffix);
+                            self.append_entries(prefix_len, commit_len, &suffix, stdout)?;
                             let ack = prefix_len + suffix.len();
 
                             reply.body.payload = Payload::LogResponse {
@@ -405,6 +427,10 @@ impl Node<(), Payload, Command> for KafkaNode {
                         ack,
                         success,
                     } => {
+                        error!(
+                            "Receive LogResponse from {} term {} ack {} success {}",
+                            node, term, ack, success
+                        );
                         if self.term == term && matches!(self.node_role, NodeRole::Leader) {
                             let sent_length =
                                 self.sent_length.get(&node).map(|n| *n).unwrap_or_default();
@@ -416,7 +442,8 @@ impl Node<(), Payload, Command> for KafkaNode {
                                 self.sent_length.insert(node.clone(), ack);
                                 self.acked_length.insert(node.clone(), ack);
 
-                                self.leader_commit(ack);
+                                error!("Leader commit with ack {}", ack);
+                                self.leader_commit(ack, stdout)?;
                             } else if sent_length > 0 {
                                 self.sent_length.insert(node.clone(), sent_length - 1);
                                 self.replicate_log(&node, stdout)?;
@@ -458,7 +485,7 @@ impl KafkaNode {
         self.term += 1;
         self.voted_for.insert(self.term, self.node.clone());
         self.votes_received.insert(self.node.clone());
-        eprintln!(
+        error!(
             "{:#?} become candidate with term {:#?}",
             self.node, self.term
         );
@@ -468,18 +495,18 @@ impl KafkaNode {
         self.node_role = NodeRole::Follower;
         self.voted_for.remove(&self.term);
 
-        eprintln!("{:#?} become follower", self.node);
+        error!("{:#?} become follower", self.node);
     }
 
     fn become_leader(&mut self) {
         self.node_role = NodeRole::Leader;
         self.leader = Some(self.node.clone());
-        eprintln!("{:#?} become leader", self.node);
+        error!("{:#?} become leader", self.node);
     }
 
     fn maybe_step_down(&mut self, remote_term: usize) {
         if self.term < remote_term {
-            eprintln!(
+            error!(
                 "Stepping down: remote term {:#?} is higher then our term {:#?}",
                 remote_term, self.term
             );
@@ -494,7 +521,7 @@ impl KafkaNode {
 
     fn leader_is_failed(&mut self) {
         self.leader = None;
-        eprintln!("Detect leader is down");
+        error!("Detect leader is down");
     }
 
     fn last_log_term(&self) -> usize {
@@ -561,12 +588,19 @@ impl KafkaNode {
             },
         };
 
+        error!("Replicate log {:#?} to {}", message, follower);
         message.send(stdout)?;
 
         Ok(())
     }
 
-    fn append_entries(&mut self, prefix_len: usize, leader_commit: usize, suffix: &[Log]) {
+    fn append_entries(
+        &mut self,
+        prefix_len: usize,
+        leader_commit: usize,
+        suffix: &[Log],
+        stdout: &mut StdoutLock,
+    ) -> anyhow::Result<()> {
         if suffix.len() > 0 && self.log_cache.len() > prefix_len {
             let index = min(self.log_cache.len(), prefix_len + suffix.len()) - 1;
             if self.log_cache[index].term != suffix[index - prefix_len].term {
@@ -583,21 +617,31 @@ impl KafkaNode {
                     })
                     .collect();
             }
+        }
 
-            if prefix_len + suffix.len() > self.log_cache.len() {
-                for i in self.log_cache.len() - prefix_len..suffix.len() {
-                    self.log_cache.push(suffix[i].clone());
-                }
-            }
-
-            // the followers commmit only when the leader sends the leader_commit which is greater than follower's commit length
-            if leader_commit > self.commits_len() {
-                // some logs are ready to be committed
-                for i in self.commits_len()..leader_commit {
-                    self.commit(self.log_cache[i].clone());
-                }
+        if prefix_len + suffix.len() > self.log_cache.len() {
+            error!(
+                "Append to logs with log_length = {} prefix_len = {} suffix_len = {}",
+                self.log_cache.len(),
+                prefix_len,
+                suffix.len()
+            );
+            for i in self.log_cache.len() - prefix_len..suffix.len() {
+                self.log_cache.push(suffix[i].clone());
             }
         }
+
+        // the followers commmit only when the leader sends the leader_commit which is greater than follower's commit length
+        if leader_commit > self.commits_len() {
+            // some logs are ready to be committed
+            for i in self.commits_len()..leader_commit {
+                self.commit(self.log_cache[i].clone());
+            }
+
+            self.handle_cached_client_requests(stdout)?;
+        }
+
+        Ok(())
     }
 
     fn forward_msg_to_leader(
@@ -608,6 +652,7 @@ impl KafkaNode {
         if let Some(leader) = &self.leader {
             msg.dest = leader.clone();
 
+            // error!("Forward message {:#?} to leader {}", &msg, leader);
             msg.send(stdout)?;
         }
         Ok(())
@@ -618,7 +663,7 @@ impl KafkaNode {
     }
 
     fn get_rand_election_deadline() -> DateTime<Utc> {
-        Utc::now() + rand::thread_rng().gen_range(600..=900) * Duration::from_millis(1)
+        Utc::now() + rand::thread_rng().gen_range(150..=300) * Duration::from_millis(1)
     }
 
     fn last_offset(&self, key: &str) -> usize {
@@ -633,11 +678,32 @@ impl KafkaNode {
         self.commit_cache.len()
     }
 
-    fn commit(&mut self, log: Log) {
-        self.commit_cache.push(log);
+    fn get_last_committed_offset(&self, key: &str) -> usize {
+        self.committed_offset
+            .get(key)
+            .map(|n| *n)
+            .unwrap_or_default()
     }
 
-    fn leader_commit(&mut self, ack: usize) {
+    fn commit(&mut self, log: Log) {
+        error!("Commit {:#?}", log);
+        let offset = log.offset;
+        let key = log.key.clone();
+
+        self.commit_cache.push(log);
+
+        if let Some(set) = self.key_to_offset_cache.get_mut(&key) {
+            set.push_back(offset);
+        } else {
+            let mut set = VecDeque::new();
+            set.push_back(offset);
+            self.key_to_offset_cache.insert(key.clone(), set);
+        }
+
+        self.committed_offset.insert(key, offset);
+    }
+
+    fn leader_commit(&mut self, ack: usize, stdout: &mut StdoutLock) -> anyhow::Result<()> {
         let min_acks = (self.node_ids.len() + 1) / 2;
         // acked return the number of nodes that have acknowledged log length greater than a specific length
         let acked = |length: usize| -> usize {
@@ -666,23 +732,64 @@ impl KafkaNode {
             for i in self.commits_len()..max_commit {
                 self.commit(self.log_cache[i].clone());
             }
+
+            self.handle_cached_client_requests(stdout)?;
         }
+
+        Ok(())
+    }
+
+    fn handle_cached_client_requests(&mut self, stdout: &mut StdoutLock) -> anyhow::Result<()> {
+        let mut req_len = self.req_cache.len();
+
+        if self.req_cache.len() > 0 {
+            while let Some(req) = self.req_cache.pop_front() {
+                if req_len == 0 {
+                    break;
+                }
+                req_len -= 1;
+
+                match &req.body.payload {
+                    Payload::Send { key, msg } => {
+                        if let Some(offset_cache) = self.key_to_offset_cache.get_mut(key) {
+                            if let Some(offset) = offset_cache.pop_front() {
+                                let mut reply = req.into_reply(Some(&mut self.id));
+                                reply.body.payload = Payload::SendOk { offset };
+                                reply.send(stdout)?;
+                            } else {
+                                self.req_cache.push_back(req.clone());
+                            }
+                        } else {
+                            // we cannot handle the request at the moment, so we push them back to queue
+                            self.req_cache.push_back(req.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn add_log(&mut self, log: Log) {
+        error!("Append log {:#?}", log);
+        self.offset.insert(log.key.clone(), log.offset);
+        self.log_cache.push(log);
     }
 
     fn get_logs(&self, key: &str, offset: usize, max_items: usize) -> Vec<Log> {
-        let logs = self
-            .log_storage
-            .get(key)
-            .map(Clone::clone)
-            .unwrap_or(Vec::new());
-
-        logs.into_iter()
-            .filter(|item| item.offset >= offset)
-            .take(max_items)
-            .collect::<Vec<Log>>()
+        // TODO
+        Vec::new()
     }
 }
 
 fn main() -> anyhow::Result<()> {
+    stderrlog::new()
+        .module(module_path!())
+        .timestamp(stderrlog::Timestamp::Millisecond)
+        .init()
+        .unwrap();
+
     main_loop::<_, KafkaNode, _, _>(())
 }
