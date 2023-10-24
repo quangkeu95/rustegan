@@ -8,47 +8,57 @@ cargo build
 ```
 
 ## Test with Maelstrom
-[x] Echo
+- [x] Echo
 ```bash
 ./maelstrom/maelstrom test -w echo --bin ./target/debug/echo --node-count 1 --time-limit 10
 ```
 
-[x] Unique ID Generation
+- [x] Unique ID Generation
 ```bash
 ./maelstrom/maelstrom test -w unique-ids --bin ./target/debug/unique-ids --time-limit 30 --rate 1000 --node-count 3 --availability total --nemesis partition
 ```
 
-[x] Single-Node Broadcast
+- [x] Single-Node Broadcast
 ```bash
 ./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 1 --time-limit 20 --rate 10
 ```
 
-[x] Multi-Node Broadcast
+- [x] Multi-Node Broadcast
 ```bash
 ./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 5 --time-limit 20 --rate 10
 ```
 
-[x] Fault Tolerant Broadcast
+- [x] Fault Tolerant Broadcast
 ```bash
 ./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 5 --time-limit 20 --rate 10 --nemesis partition
 ```
 
-[x] Broadcast Efficiency Part 1
+- [x] Broadcast Efficiency Part 1
 ```bash
 ./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --nemesis partition
 ```
 
-[x] Broadcast Efficiency Part 2
+- [x] Broadcast Efficiency Part 2
 ```bash
 ./maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100 --topology tree4
 ```
 
-[x] Grow-only Counter
+- [x] Grow-only Counter
 ```bash
 ./maelstrom/maelstrom test -w g-counter --bin ./target/debug/counter --node-count 3 --rate 100 --time-limit 20 --nemesis partition
 ```
 
-[x] PN Counter
+- [x] PN Counter
 ```bash
 ./maelstrom/maelstrom test -w pn-counter --bin ./target/debug/counter --node-count 3 --rate 100 --time-limit 20 --nemesis partition
+```
+
+- [x] Single-node Kafka
+```bash
+./maelstrom/maelstrom test -w kafka --bin ./target/debug/kafka --node-count 1 --concurrency 2n --time-limit 20 --rate 1000
+```
+
+- [x] Multi-node Kafka
+```bash
+./maelstrom/maelstrom test -w kafka --bin ./target/debug/multinode-kafka --node-count 2 --concurrency 2n --time-limit 20 --rate 1000
 ```
