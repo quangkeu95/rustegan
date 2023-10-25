@@ -13,11 +13,6 @@ use std::time::Duration;
 enum Payload {
     Txn { txn: Vec<Operation> },
     TxnOk { txn: Vec<Operation> },
-    // SyncRequest {
-    //     known_len: usize,
-    //     commit_len: usize,
-    //     txs: Vec<Transaction>,
-    // },
 }
 
 #[derive(Debug, Clone)]
@@ -36,13 +31,6 @@ impl Operation {
                 *old_value = Some(value);
             }
             _ => {}
-        }
-    }
-
-    fn is_write(&self) -> bool {
-        match self {
-            Operation::Write { .. } => true,
-            _ => false,
         }
     }
 }
@@ -108,19 +96,11 @@ impl Serialize for Operation {
 }
 
 #[derive(Debug, Clone)]
-enum Command {
-    SyncRequest,
-}
-
-type Transaction = Vec<Operation>;
+enum Command {}
 
 struct TxnRwNode {
-    node: NodeId,
-    node_ids: Vec<NodeId>,
     id: usize,
     storage: HashMap<usize, usize>,
-    transactions: Vec<Transaction>,
-    commit_len: usize,
 }
 
 impl Node<(), Payload, Command> for TxnRwNode {
@@ -129,21 +109,9 @@ impl Node<(), Payload, Command> for TxnRwNode {
         init: Init,
         sender: Sender<Event<Payload, Command>>,
     ) -> anyhow::Result<Self> {
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(100));
-
-            if let Err(_) = sender.send(Event::Command(Command::SyncRequest)) {
-                break;
-            }
-        });
-
         Ok(TxnRwNode {
-            node: init.node_id,
-            node_ids: init.node_ids,
             id: 0,
             storage: HashMap::new(),
-            transactions: Vec::new(),
-            commit_len: 0,
         })
     }
 
@@ -154,24 +122,7 @@ impl Node<(), Payload, Command> for TxnRwNode {
     ) -> anyhow::Result<()> {
         match event {
             Event::EOF => {}
-            Event::Command(command) => match command {
-                Command::SyncRequest => {
-                    let other_nodes = self.other_nodes();
-
-                    if other_nodes.len() > 0 {
-                    } else {
-                        if self.transactions.len() > 0 {
-                            let uncommitted_txs = self.transactions[self.commit_len..]
-                                .iter()
-                                .map(|item| item.clone())
-                                .collect::<Vec<Transaction>>();
-                            for tx in uncommitted_txs {
-                                self.commit(tx);
-                            }
-                        }
-                    }
-                }
-            },
+            Event::Command(command) => {}
             Event::Message(message) => {
                 let message_src = message.src.clone();
                 let mut reply = message.into_reply(Some(&mut self.id));
@@ -180,24 +131,26 @@ impl Node<(), Payload, Command> for TxnRwNode {
                     Payload::Txn { txn } => {
                         let mut responses: Vec<Operation> = Vec::new();
 
-                        let mut write_tx: Vec<Operation> = Vec::new();
+                        let mut prepare_write_txs: Vec<(usize, usize)> = Vec::new();
 
                         for tx in txn {
                             let mut res = tx.clone();
                             match tx {
                                 Operation::Read { key, value: _value } => {
-                                    if let Some(read_value) = self.get_committed_value(&key) {
-                                        res.set_read_value(read_value);
+                                    if let Some(read_value) = self.storage.get(&key) {
+                                        res.set_read_value(*read_value);
                                     }
                                 }
-                                wr_tx @ Operation::Write { .. } => {
-                                    write_tx.push(wr_tx);
+                                Operation::Write { key, value } => {
+                                    prepare_write_txs.push((key, value));
                                 }
                             }
                             responses.push(res);
                         }
 
-                        self.append_transaction(write_tx);
+                        for tx in prepare_write_txs {
+                            self.storage.insert(tx.0, tx.1);
+                        }
 
                         reply.body.payload = Payload::TxnOk { txn: responses };
                         reply.send(stdout)?;
@@ -207,40 +160,6 @@ impl Node<(), Payload, Command> for TxnRwNode {
             }
         }
         Ok(())
-    }
-}
-
-impl TxnRwNode {
-    fn other_nodes(&self) -> Vec<NodeId> {
-        self.node_ids
-            .iter()
-            .filter_map(|n| {
-                if *n != self.node {
-                    Some(n.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-    fn get_committed_value(&self, key: &usize) -> Option<usize> {
-        self.storage.get(key).map(|n| *n)
-    }
-
-    fn append_transaction(&mut self, tx: Transaction) {
-        self.transactions.push(tx);
-    }
-
-    fn commit(&mut self, tx: Transaction) {
-        for op in tx {
-            match op {
-                Operation::Write { key, value } => {
-                    self.storage.insert(key, value);
-                }
-                _ => {}
-            }
-        }
-        self.commit_len += 1;
     }
 }
 
