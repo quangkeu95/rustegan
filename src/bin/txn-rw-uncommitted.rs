@@ -279,20 +279,20 @@ impl TxnRwNode {
     }
 
     fn append_log(&mut self, tx: Transaction, timestamp: DateTime<Utc>) {
-        // let operations = tx
-        //     .clone()
-        //     .into_iter()
-        //     .filter_map(|op| match op {
-        //         Operation::Write { key, value } => Some((key, value)),
-        //         _ => None,
-        //     })
-        //     .collect::<Vec<(usize, usize)>>();
+        let operations = tx
+            .clone()
+            .into_iter()
+            .filter_map(|op| match op {
+                Operation::Write { key, value } => Some((key, value)),
+                _ => None,
+            })
+            .collect::<Vec<(usize, usize)>>();
 
-        // let log = Log {
-        //     operations,
-        //     timestamp,
-        // };
-        // self.logs.push(log);
+        let log = Log {
+            operations,
+            timestamp,
+        };
+        self.logs.push(log);
 
         for op in tx {
             match op {
