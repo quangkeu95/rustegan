@@ -14,9 +14,8 @@ use std::time::Duration;
 enum Payload {
     Txn { txn: Vec<Operation> },
     TxnOk { txn: Vec<Operation> },
-    // SyncReq {
-    //     storage: HashMap<usize, ValueWithTimestamp>,
-    // },
+    SyncReq { logs: Vec<Log> },
+    SyncOk { log_index: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -108,11 +107,12 @@ impl Serialize for Operation {
 
 #[derive(Debug, Clone)]
 enum Command {
-    // SyncRequest,
+    SyncRequest,
 }
 
 type Transaction = Vec<Operation>;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Log {
     operations: Vec<(usize, usize)>,
     timestamp: DateTime<Utc>,
@@ -124,6 +124,7 @@ struct TxnRwNode {
     id: usize,
     storage: HashMap<usize, ValueWithTimestamp>,
     logs: Vec<Log>,
+    known_log_index: HashMap<NodeId, usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,13 +139,13 @@ impl Node<(), Payload, Command> for TxnRwNode {
         init: Init,
         sender: Sender<Event<Payload, Command>>,
     ) -> anyhow::Result<Self> {
-        // std::thread::spawn(move || loop {
-        //     std::thread::sleep(Duration::from_millis(100));
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(300));
 
-        //     if let Err(_) = sender.send(Event::Command(Command::SyncRequest)) {
-        //         break;
-        //     }
-        // });
+            if let Err(_) = sender.send(Event::Command(Command::SyncRequest)) {
+                break;
+            }
+        });
 
         Ok(TxnRwNode {
             node: init.node_id,
@@ -152,6 +153,7 @@ impl Node<(), Payload, Command> for TxnRwNode {
             id: 0,
             storage: HashMap::new(),
             logs: Vec::new(),
+            known_log_index: HashMap::new(),
         })
     }
 
@@ -163,28 +165,30 @@ impl Node<(), Payload, Command> for TxnRwNode {
         match event {
             Event::EOF => {}
             Event::Command(command) => match command {
-                // Command::SyncRequest => {
-                //     let other_nodes = self.other_nodes();
+                Command::SyncRequest => {
+                    let other_nodes = self.other_nodes();
 
-                //     if other_nodes.len() > 0 {
-                //         for n in other_nodes {
-                //             let msg = Message {
-                //                 src: self.node.clone(),
-                //                 dest: n,
-                //                 body: MessageBody {
-                //                     msg_id: Some(self.id),
-                //                     in_reply_to: None,
-                //                     payload: Payload::SyncReq {
-                //                         storage: self.storage.clone(),
-                //                     },
-                //                 },
-                //             };
+                    if other_nodes.len() > 0 {
+                        for n in other_nodes {
+                            let log_index_start =
+                                self.known_log_index.get(&n).map(|n| *n).unwrap_or_default();
+                            let logs = self.logs[log_index_start..].iter().cloned().collect();
 
-                //             msg.send(stdout)?;
-                //         }
-                //     } else {
-                //     }
-                // }
+                            let msg = Message {
+                                src: self.node.clone(),
+                                dest: n,
+                                body: MessageBody {
+                                    msg_id: Some(self.id),
+                                    in_reply_to: None,
+                                    payload: Payload::SyncReq { logs },
+                                },
+                            };
+
+                            msg.send(stdout)?;
+                        }
+                    } else {
+                    }
+                }
             },
             Event::Message(message) => {
                 let message_src = message.src.clone();
@@ -217,18 +221,26 @@ impl Node<(), Payload, Command> for TxnRwNode {
                         reply.body.payload = Payload::TxnOk { txn: responses };
                         reply.send(stdout)?;
                     }
-                    // Payload::SyncReq { storage } => {
-                    //     for (key, value_with_timestamp) in storage {
-                    //         if let Some(old_value) = self.storage.get_mut(&key) {
-                    //             if old_value.timestamp < value_with_timestamp.timestamp {
-                    //                 old_value.value = value_with_timestamp.value;
-                    //                 old_value.timestamp = value_with_timestamp.timestamp;
-                    //             }
-                    //         } else {
-                    //             self.storage.insert(key, value_with_timestamp);
-                    //         }
-                    //     }
-                    // }
+                    Payload::SyncReq { logs } => {
+                        for item in logs {
+                            let timestamp = item.timestamp;
+                            for op in item.operations {
+                                let key = op.0;
+                                let value = op.1;
+                                if let Some(old_value) = self.storage.get_mut(&key) {
+                                    if old_value.timestamp < timestamp {
+                                        old_value.value = value;
+                                    }
+                                } else {
+                                    self.storage
+                                        .insert(key, ValueWithTimestamp { value, timestamp });
+                                }
+                            }
+                        }
+                    }
+                    Payload::SyncOk { log_index } => {
+                        self.known_log_index.insert(message_src, log_index);
+                    }
                     Payload::TxnOk { .. } => {}
                 }
             }
@@ -256,20 +268,20 @@ impl TxnRwNode {
     }
 
     fn append_log(&mut self, tx: Transaction, timestamp: DateTime<Utc>) {
-        let operations = tx
-            .clone()
-            .into_iter()
-            .filter_map(|op| match op {
-                Operation::Write { key, value } => Some((key, value)),
-                _ => None,
-            })
-            .collect::<Vec<(usize, usize)>>();
+        // let operations = tx
+        //     .clone()
+        //     .into_iter()
+        //     .filter_map(|op| match op {
+        //         Operation::Write { key, value } => Some((key, value)),
+        //         _ => None,
+        //     })
+        //     .collect::<Vec<(usize, usize)>>();
 
-        let log = Log {
-            operations,
-            timestamp,
-        };
-        self.logs.push(log);
+        // let log = Log {
+        //     operations,
+        //     timestamp,
+        // };
+        // self.logs.push(log);
 
         for op in tx {
             match op {
