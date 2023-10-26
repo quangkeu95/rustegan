@@ -222,6 +222,8 @@ impl Node<(), Payload, Command> for TxnRwNode {
                         reply.send(stdout)?;
                     }
                     Payload::SyncReq { logs } => {
+                        let log_len = logs.len();
+
                         for item in logs {
                             let timestamp = item.timestamp;
                             for op in item.operations {
@@ -236,6 +238,15 @@ impl Node<(), Payload, Command> for TxnRwNode {
                                         .insert(key, ValueWithTimestamp { value, timestamp });
                                 }
                             }
+                        }
+
+                        let log_index = self
+                            .known_log_index
+                            .get(&message_src)
+                            .map(|n| *n)
+                            .unwrap_or_default();
+                        reply.body.payload = Payload::SyncOk {
+                            log_index: log_index + log_len,
                         }
                     }
                     Payload::SyncOk { log_index } => {
