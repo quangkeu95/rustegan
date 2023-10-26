@@ -62,3 +62,18 @@ cargo build
 ```bash
 ./maelstrom/maelstrom test -w kafka --bin ./target/debug/multinode-kafka --node-count 2 --concurrency 2n --time-limit 20 --rate 1000
 ```
+
+- [x] Single-node Total Available Transactions
+```bash
+./maelstrom/maelstrom test -w txn-rw-register --bin ./target/debug/txn-rw-register --node-count 1 --time-limit 20 --rate 1000 --concurrency 2n --consistency-models read-uncommitted --availability total
+```
+
+- [x] Multi-node Totally-available Read Uncommitted Transactions
+```bash
+./maelstrom/maelstrom test -w txn-rw-register --bin ./target/debug/txn-rw-uncommitted --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted --availability total --nemesis partition
+```
+
+- [x] Multi-node Totally-available Read Committed Transactions
+```bash
+./maelstrom/maelstrom test -w txn-rw-register --bin ./target/debug/txn-rw-committed --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-committed --availability total –-nemesis partition
+```
