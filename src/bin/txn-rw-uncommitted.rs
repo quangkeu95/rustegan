@@ -1,6 +1,7 @@
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use rustegan::{message::*, node::*, *};
+use serde::de::value;
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::io::StdoutLock;
@@ -13,10 +14,8 @@ use std::time::Duration;
 enum Payload {
     Txn { txn: Vec<Operation> },
     TxnOk { txn: Vec<Operation> },
-    // SyncRequest {
-    //     known_len: usize,
-    //     commit_len: usize,
-    //     txs: Vec<Transaction>,
+    // SyncReq {
+    //     storage: HashMap<usize, ValueWithTimestamp>,
     // },
 }
 
@@ -109,18 +108,28 @@ impl Serialize for Operation {
 
 #[derive(Debug, Clone)]
 enum Command {
-    SyncRequest,
+    // SyncRequest,
 }
 
 type Transaction = Vec<Operation>;
+
+struct Log {
+    operations: Vec<(usize, usize)>,
+    timestamp: DateTime<Utc>,
+}
 
 struct TxnRwNode {
     node: NodeId,
     node_ids: Vec<NodeId>,
     id: usize,
-    storage: HashMap<usize, usize>,
-    transactions: Vec<Transaction>,
-    commit_len: usize,
+    storage: HashMap<usize, ValueWithTimestamp>,
+    logs: Vec<Log>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ValueWithTimestamp {
+    value: usize,
+    timestamp: DateTime<Utc>,
 }
 
 impl Node<(), Payload, Command> for TxnRwNode {
@@ -129,21 +138,20 @@ impl Node<(), Payload, Command> for TxnRwNode {
         init: Init,
         sender: Sender<Event<Payload, Command>>,
     ) -> anyhow::Result<Self> {
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(100));
+        // std::thread::spawn(move || loop {
+        //     std::thread::sleep(Duration::from_millis(100));
 
-            if let Err(_) = sender.send(Event::Command(Command::SyncRequest)) {
-                break;
-            }
-        });
+        //     if let Err(_) = sender.send(Event::Command(Command::SyncRequest)) {
+        //         break;
+        //     }
+        // });
 
         Ok(TxnRwNode {
             node: init.node_id,
             node_ids: init.node_ids,
             id: 0,
             storage: HashMap::new(),
-            transactions: Vec::new(),
-            commit_len: 0,
+            logs: Vec::new(),
         })
     }
 
@@ -155,22 +163,28 @@ impl Node<(), Payload, Command> for TxnRwNode {
         match event {
             Event::EOF => {}
             Event::Command(command) => match command {
-                Command::SyncRequest => {
-                    let other_nodes = self.other_nodes();
+                // Command::SyncRequest => {
+                //     let other_nodes = self.other_nodes();
 
-                    if other_nodes.len() > 0 {
-                    } else {
-                        if self.transactions.len() > 0 {
-                            let uncommitted_txs = self.transactions[self.commit_len..]
-                                .iter()
-                                .map(|item| item.clone())
-                                .collect::<Vec<Transaction>>();
-                            for tx in uncommitted_txs {
-                                self.commit(tx);
-                            }
-                        }
-                    }
-                }
+                //     if other_nodes.len() > 0 {
+                //         for n in other_nodes {
+                //             let msg = Message {
+                //                 src: self.node.clone(),
+                //                 dest: n,
+                //                 body: MessageBody {
+                //                     msg_id: Some(self.id),
+                //                     in_reply_to: None,
+                //                     payload: Payload::SyncReq {
+                //                         storage: self.storage.clone(),
+                //                     },
+                //                 },
+                //             };
+
+                //             msg.send(stdout)?;
+                //         }
+                //     } else {
+                //     }
+                // }
             },
             Event::Message(message) => {
                 let message_src = message.src.clone();
@@ -178,6 +192,7 @@ impl Node<(), Payload, Command> for TxnRwNode {
 
                 match reply.body.payload {
                     Payload::Txn { txn } => {
+                        let timestamp = Utc::now();
                         let mut responses: Vec<Operation> = Vec::new();
 
                         let mut write_tx: Vec<Operation> = Vec::new();
@@ -186,7 +201,7 @@ impl Node<(), Payload, Command> for TxnRwNode {
                             let mut res = tx.clone();
                             match tx {
                                 Operation::Read { key, value: _value } => {
-                                    if let Some(read_value) = self.get_committed_value(&key) {
+                                    if let Some(read_value) = self.get_uncommitted_value(&key) {
                                         res.set_read_value(read_value);
                                     }
                                 }
@@ -197,11 +212,23 @@ impl Node<(), Payload, Command> for TxnRwNode {
                             responses.push(res);
                         }
 
-                        self.append_transaction(write_tx);
+                        self.append_log(write_tx, timestamp);
 
                         reply.body.payload = Payload::TxnOk { txn: responses };
                         reply.send(stdout)?;
                     }
+                    // Payload::SyncReq { storage } => {
+                    //     for (key, value_with_timestamp) in storage {
+                    //         if let Some(old_value) = self.storage.get_mut(&key) {
+                    //             if old_value.timestamp < value_with_timestamp.timestamp {
+                    //                 old_value.value = value_with_timestamp.value;
+                    //                 old_value.timestamp = value_with_timestamp.timestamp;
+                    //             }
+                    //         } else {
+                    //             self.storage.insert(key, value_with_timestamp);
+                    //         }
+                    //     }
+                    // }
                     Payload::TxnOk { .. } => {}
                 }
             }
@@ -223,24 +250,36 @@ impl TxnRwNode {
             })
             .collect()
     }
-    fn get_committed_value(&self, key: &usize) -> Option<usize> {
-        self.storage.get(key).map(|n| *n)
+
+    fn get_uncommitted_value(&self, key: &usize) -> Option<usize> {
+        self.storage.get(key).map(|n| n.value)
     }
 
-    fn append_transaction(&mut self, tx: Transaction) {
-        self.transactions.push(tx);
-    }
+    fn append_log(&mut self, tx: Transaction, timestamp: DateTime<Utc>) {
+        let operations = tx
+            .clone()
+            .into_iter()
+            .filter_map(|op| match op {
+                Operation::Write { key, value } => Some((key, value)),
+                _ => None,
+            })
+            .collect::<Vec<(usize, usize)>>();
 
-    fn commit(&mut self, tx: Transaction) {
+        let log = Log {
+            operations,
+            timestamp,
+        };
+        self.logs.push(log);
+
         for op in tx {
             match op {
                 Operation::Write { key, value } => {
-                    self.storage.insert(key, value);
+                    self.storage
+                        .insert(key, ValueWithTimestamp { value, timestamp });
                 }
                 _ => {}
             }
         }
-        self.commit_len += 1;
     }
 }
 
